@@ -1,0 +1,22 @@
+{
+  "project_root": "/Users/masa/Projects/claude-mpm",
+  "index_path": "/Users/masa/Projects/claude-mpm/.mcp-vector-search",
+  "file_extensions": [
+    ".py",
+    ".js",
+    ".ts"
+  ],
+  "embedding_model": "sentence-transformers/all-MiniLM-L6-v2",
+  "similarity_threshold": 0.5,
+  "max_chunk_size": 512,
+  "languages": [
+    "bash",
+    "go",
+    "javascript",
+    "python",
+    "typescript"
+  ],
+  "watch_files": false,
+  "cache_embeddings": true,
+  "max_cache_size": 1000
+}
