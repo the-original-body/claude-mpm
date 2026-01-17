@@ -294,6 +294,28 @@ async function createSession(projectId) {
     }
 }
 
+async function renameSession() {
+    if (!state.currentSession) return;
+
+    const currentName = document.getElementById('output-title').textContent;
+    const newName = prompt('Enter new name for this session:', currentName);
+
+    if (!newName || newName === currentName) return;
+
+    try {
+        await fetchAPI(`/sessions/${state.currentSession}/rename?name=${encodeURIComponent(newName)}`, {
+            method: 'POST'
+        });
+        // Update UI
+        document.getElementById('output-title').textContent = newName;
+        // Refresh tree to show new name
+        await loadProjects();
+        log(`Renamed session to: ${newName}`);
+    } catch (err) {
+        log(`Failed to rename session: ${err.message}`, 'error');
+    }
+}
+
 async function openInTerminal() {
     if (!state.currentSession) return;
     const terminal = getPreferredTerminal();

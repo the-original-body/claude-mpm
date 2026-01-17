@@ -246,6 +246,41 @@ async def sync_sessions():
     }
 
 
+@router.post("/sessions/{session_id}/rename")
+async def rename_session(session_id: str, name: str):
+    """Rename a session's tmux window.
+
+    Args:
+        session_id: Unique session identifier
+        name: New name for the window
+
+    Returns:
+        Success status with new name
+
+    Raises:
+        SessionNotFoundError: If session_id doesn't exist
+    """
+    registry = _get_registry()
+    tmux_orch = _get_tmux()
+
+    # Find session across all projects
+    session = None
+    for project in registry.list_all():
+        if session_id in project.sessions:
+            session = project.sessions[session_id]
+            break
+
+    if session is None:
+        raise SessionNotFoundError(session_id)
+
+    try:
+        tmux_orch.rename_window(session.tmux_target, name)
+        return {"status": "renamed", "session_id": session_id, "name": name}
+    except Exception as e:
+        logger.warning(f"Failed to rename session {session_id}: {e}")
+        return {"status": "error", "error": str(e)}
+
+
 @router.post("/sessions/{session_id}/open-terminal")
 async def open_session_in_terminal(session_id: str, terminal: str = "iterm"):
     """Open the session's tmux window in the specified terminal.

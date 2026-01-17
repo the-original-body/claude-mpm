@@ -322,6 +322,29 @@ class TmuxOrchestrator:
         """
         return self.kill_window(target)
 
+    def rename_window(self, target: str, new_name: str) -> bool:
+        """Rename a tmux window.
+
+        Args:
+            target: Tmux target (pane_id like %5)
+            new_name: New name for the window
+
+        Returns:
+            True if successful
+
+        Raises:
+            subprocess.CalledProcessError: If target window doesn't exist
+
+        Example:
+            >>> orchestrator = TmuxOrchestrator()
+            >>> orchestrator.rename_window("%5", "my-new-name")
+            True
+        """
+        logger.info(f"Renaming window {target} to '{new_name}'")
+
+        self._run_tmux(["rename-window", "-t", target, new_name])
+        return True
+
     def kill_window(self, target: str) -> bool:
         """Kill a specific window.
 
