@@ -215,6 +215,42 @@ async def stop_session(session_id: str) -> Response:
     return Response(status_code=204)
 
 
+@router.get("/tmux/session")
+async def get_tmux_session():
+    """Get current tmux session name.
+
+    Returns:
+        Current session name and status
+    """
+    tmux_orch = _get_tmux()
+
+    return {
+        "name": tmux_orch.session_name,
+        "exists": tmux_orch.session_exists()
+    }
+
+
+@router.post("/tmux/session/rename")
+async def rename_tmux_session(name: str):
+    """Rename the tmux session.
+
+    Args:
+        name: New name for the tmux session
+
+    Returns:
+        Success status with new name
+    """
+    tmux_orch = _get_tmux()
+
+    try:
+        old_name = tmux_orch.session_name
+        tmux_orch.rename_session(name)
+        return {"status": "renamed", "old_name": old_name, "new_name": name}
+    except Exception as e:
+        logger.warning(f"Failed to rename tmux session: {e}")
+        return {"status": "error", "error": str(e)}
+
+
 @router.post("/sessions/sync")
 async def sync_sessions():
     """Synchronize sessions with tmux windows.

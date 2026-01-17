@@ -558,12 +558,41 @@ async function registerProject() {
 // Settings Modal
 // =============================================================================
 
-function showSettingsModal() {
+async function showSettingsModal() {
     document.getElementById('settings-modal').classList.remove('hidden');
-    // Load current settings
+    // Load current terminal setting
     const terminal = localStorage.getItem('preferred-terminal') || 'iterm';
     const radio = document.querySelector(`input[name="terminal"][value="${terminal}"]`);
     if (radio) radio.checked = true;
+
+    // Load current tmux session name
+    try {
+        const data = await fetchAPI('/tmux/session');
+        document.getElementById('tmux-session-name').value = data.name;
+    } catch (err) {
+        log(`Failed to load tmux session: ${err.message}`, 'error');
+    }
+}
+
+async function renameTmuxSession() {
+    const newName = document.getElementById('tmux-session-name').value.trim();
+    if (!newName) {
+        alert('Please enter a session name');
+        return;
+    }
+
+    try {
+        const result = await fetchAPI(`/tmux/session/rename?name=${encodeURIComponent(newName)}`, {
+            method: 'POST'
+        });
+        if (result.status === 'renamed') {
+            log(`Tmux session renamed to: ${newName}`);
+        } else {
+            alert('Failed to rename: ' + result.error);
+        }
+    } catch (err) {
+        alert('Failed to rename tmux session: ' + err.message);
+    }
 }
 
 function hideSettingsModal() {

@@ -83,6 +83,29 @@ class TmuxOrchestrator:
         except FileNotFoundError as err:
             raise TmuxNotFoundError() from err
 
+    def rename_session(self, new_name: str) -> bool:
+        """Rename the tmux session.
+
+        Args:
+            new_name: New name for the session
+
+        Returns:
+            True if successful
+
+        Example:
+            >>> orchestrator = TmuxOrchestrator()
+            >>> orchestrator.rename_session("my-session")
+            True
+        """
+        if not self.session_exists():
+            logger.warning(f"Session '{self.session_name}' does not exist")
+            return False
+
+        logger.info(f"Renaming session '{self.session_name}' to '{new_name}'")
+        self._run_tmux(["rename-session", "-t", self.session_name, new_name])
+        self.session_name = new_name
+        return True
+
     def session_exists(self) -> bool:
         """Check if commander session exists.
 
