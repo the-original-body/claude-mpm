@@ -282,6 +282,41 @@ async def sync_sessions():
     }
 
 
+@router.get("/sessions/{session_id}/window-name")
+async def get_session_window_name(session_id: str):
+    """Get the tmux window name for a session.
+
+    Args:
+        session_id: Unique session identifier
+
+    Returns:
+        Window name from tmux
+
+    Raises:
+        SessionNotFoundError: If session_id doesn't exist
+    """
+    registry = _get_registry()
+    tmux_orch = _get_tmux()
+
+    # Find session across all projects
+    session = None
+    for project in registry.list_all():
+        if session_id in project.sessions:
+            session = project.sessions[session_id]
+            break
+
+    if session is None:
+        raise SessionNotFoundError(session_id)
+
+    # Find the window name from tmux
+    windows = tmux_orch.list_windows()
+    for win in windows:
+        if win.get('pane_id') == session.tmux_target:
+            return {"session_id": session_id, "window_name": win.get('name', 'unknown')}
+
+    return {"session_id": session_id, "window_name": None}
+
+
 @router.post("/sessions/{session_id}/rename")
 async def rename_session(session_id: str, name: str):
     """Rename a session's tmux window.

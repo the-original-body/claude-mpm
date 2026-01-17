@@ -10,7 +10,8 @@ const state = {
     pollInterval: null,
     debugLogs: [],
     debugPanelOpen: false,
-    ansiUp: null
+    ansiUp: null,
+    windowNames: {}  // Cache: sessionId -> windowName
 };
 
 // Config
@@ -99,11 +100,41 @@ function getLastLine(content) {
 async function loadProjects() {
     try {
         state.projects = await fetchAPI('/projects');
+        // Load window names for all sessions
+        await loadWindowNames();
         renderProjectTree();
         log(`Loaded ${state.projects.length} projects`);
     } catch (err) {
         log(`Failed to load projects: ${err.message}`, 'error');
     }
+}
+
+async function loadWindowNames() {
+    // Collect all session IDs
+    const sessionIds = [];
+    for (const project of state.projects) {
+        for (const session of project.sessions) {
+            sessionIds.push(session.id);
+        }
+    }
+
+    // Load window names in parallel
+    const promises = sessionIds.map(async (sessionId) => {
+        try {
+            const info = await fetchAPI(`/sessions/${sessionId}/window-name`);
+            if (info.window_name) {
+                state.windowNames[sessionId] = info.window_name;
+            }
+        } catch (err) {
+            // Ignore errors
+        }
+    });
+
+    await Promise.all(promises);
+}
+
+function getSessionDisplayName(sessionId) {
+    return state.windowNames[sessionId] || `${sessionId.slice(0, 8)}...`;
 }
 
 function renderProjectTree() {
@@ -141,7 +172,7 @@ function renderProjectTree() {
                         <div class="session-item flex items-center gap-2 px-2 py-1 rounded hover:bg-gray-800 cursor-pointer transition ${state.currentSession === session.id ? 'bg-gray-800' : ''}"
                              onclick="selectSession('${project.id}', '${session.id}')" data-session="${session.id}">
                             <span class="text-xs ${session.status === 'running' ? 'text-green-400' : 'text-gray-500'}">●</span>
-                            <span class="text-sm truncate flex-1">${session.id.slice(0, 8)}...</span>
+                            <span class="text-sm truncate flex-1">${getSessionDisplayName(session.id)}</span>
                             <span class="text-xs text-gray-500">${session.runtime}</span>
                         </div>
                         <div class="last-line text-xs text-gray-500 pl-6 pb-1 truncate" id="lastline-${session.id}">
@@ -212,7 +243,8 @@ async function selectSession(projectId, sessionId) {
     const project = state.projects.find(p => p.id === projectId);
     const session = project?.sessions.find(s => s.id === sessionId);
 
-    document.getElementById('output-title').textContent = `${project?.name} / ${sessionId.slice(0, 8)}...`;
+    // Use cached window name or session ID
+    document.getElementById('output-title').textContent = getSessionDisplayName(sessionId);
 
     const statusEl = document.getElementById('output-status');
     if (session) {
@@ -297,7 +329,7 @@ async function createSession(projectId) {
 async function renameSession() {
     if (!state.currentSession) return;
 
-    const currentName = document.getElementById('output-title').textContent;
+    const currentName = getSessionDisplayName(state.currentSession);
     const newName = prompt('Enter new name for this session:', currentName);
 
     if (!newName || newName === currentName) return;
@@ -306,10 +338,11 @@ async function renameSession() {
         await fetchAPI(`/sessions/${state.currentSession}/rename?name=${encodeURIComponent(newName)}`, {
             method: 'POST'
         });
-        // Update UI
+        // Update cache and UI
+        state.windowNames[state.currentSession] = newName;
         document.getElementById('output-title').textContent = newName;
         // Refresh tree to show new name
-        await loadProjects();
+        renderProjectTree();
         log(`Renamed session to: ${newName}`);
     } catch (err) {
         log(`Failed to rename session: ${err.message}`, 'error');
