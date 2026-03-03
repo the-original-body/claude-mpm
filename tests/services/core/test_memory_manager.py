@@ -128,8 +128,8 @@ class TestMemoryManager:
             memories_dir = Path(tmpdir) / ".claude-mpm" / "memories"
 
             # Configure mock to actually create the directory
-            mock_path_resolver.ensure_directory.side_effect = (
-                lambda p: p.mkdir(parents=True, exist_ok=True) or p
+            mock_path_resolver.ensure_directory.side_effect = lambda p: (
+                p.mkdir(parents=True, exist_ok=True) or p
             )
 
             with patch(
@@ -156,8 +156,8 @@ class TestMemoryManager:
             memories_dir = Path(tmpdir) / ".claude-mpm" / "memories"
 
             # Configure mock to actually create the directory
-            mock_path_resolver.ensure_directory.side_effect = (
-                lambda p: p.mkdir(parents=True, exist_ok=True) or p
+            mock_path_resolver.ensure_directory.side_effect = lambda p: (
+                p.mkdir(parents=True, exist_ok=True) or p
             )
 
             with patch(
@@ -396,7 +396,7 @@ class TestMemoryManager:
                 "Project-level common task should be present"
             )
 
-    def test_naming_mismatch_warning(self, memory_manager, mock_cache_manager, caplog):
+    def test_naming_mismatch_warning(self, memory_manager, mock_cache_manager):
         """Test warning for agent naming mismatches."""
         mock_cache_manager.get_deployed_agents.return_value = {
             "test-agent"
@@ -414,10 +414,15 @@ class TestMemoryManager:
                 "claude_mpm.services.core.memory_manager.Path.cwd",
                 return_value=Path(tmpdir),
             ):
-                # Load memories
-                memory_manager.load_memories()
+                # Patch the logger on the instance to capture warnings regardless
+                # of logging propagation state (hook tests may suppress propagation)
+                with patch.object(memory_manager, "logger") as mock_logger:
+                    memory_manager.load_memories()
 
-            # Verify warning was logged
-            assert "Naming mismatch detected" in caplog.text
-            assert "test_agent" in caplog.text
-            assert "test-agent" in caplog.text
+                    # Verify warning was logged
+                    warning_messages = " ".join(
+                        str(call) for call in mock_logger.warning.call_args_list
+                    )
+                    assert "Naming mismatch detected" in warning_messages
+                    assert "test_agent" in warning_messages
+                    assert "test-agent" in warning_messages

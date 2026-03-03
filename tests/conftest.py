@@ -135,6 +135,116 @@ def project_root(tmp_path):
     return tmp_path
 
 
+# ===== Agent Safety Fixtures =====
+
+
+@pytest.fixture(autouse=True)
+def verify_agents_untouched():
+    """Detect any test that modifies the real .claude/agents/ directory.
+
+    Guards against regressions where production code resolves paths via
+    Path.cwd() instead of an explicit project_path argument, causing tests
+    to operate on live deployed agent files.
+
+    Checks both agents/ (for removals) and agents/unused/ (for archives),
+    since the damage path is shutil.move() from agents/ to agents/unused/.
+
+    Uses Path(__file__) rather than Path.cwd() so the guard is stable in CI
+    environments where the working directory may differ from the repo root.
+    """
+    repo_root = Path(__file__).resolve().parent.parent
+    agents_dir = repo_root / ".claude" / "agents"
+    unused_dir = agents_dir / "unused"
+
+    def _snapshot(directory: Path) -> set:
+        if not directory.exists():
+            return set()
+        return {f.name for f in directory.glob("*.md")}
+
+    before_agents = _snapshot(agents_dir)
+    before_unused = _snapshot(unused_dir)
+
+    yield
+
+    after_agents = _snapshot(agents_dir)
+    after_unused = _snapshot(unused_dir)
+
+    removed = before_agents - after_agents
+    added_to_unused = after_unused - before_unused
+
+    problems = []
+    if removed:
+        problems.append(f"agents removed from .claude/agents/: {sorted(removed)}")
+    if added_to_unused:
+        problems.append(
+            f"agents archived to .claude/agents/unused/: {sorted(added_to_unused)}"
+        )
+
+    assert not problems, (
+        "TEST BUG: Real deployed agents were modified during test.\n"
+        + "\n".join(f"  - {p}" for p in problems)
+    )
+
+
+@pytest.fixture(autouse=True)
+def verify_source_agents_untouched():
+    """Detect any test that modifies source agent files in the package.
+
+    Guards against tests that write back to src/claude_mpm/agents/ source
+    files (e.g. via save_output_style()). Under parallel execution
+    (pytest -n auto), concurrent write_text() calls can truncate these
+    files to 0 bytes due to the open(mode='w') truncation window.
+
+    Checks both file existence AND content checksums to catch truncation.
+
+    Uses Path(__file__) rather than Path.cwd() so the guard is stable in CI
+    environments where the working directory may differ from the repo root.
+    """
+    import hashlib
+
+    repo_root = Path(__file__).resolve().parent.parent
+    source_agents_dir = repo_root / "src" / "claude_mpm" / "agents"
+
+    def _content_snapshot(directory: Path) -> dict:
+        if not directory.exists():
+            return {}
+        result = {}
+        for f in directory.glob("*.md"):
+            content = f.read_bytes()
+            result[f.name] = {
+                "size": len(content),
+                "hash": hashlib.md5(content).hexdigest(),
+            }
+        return result
+
+    before = _content_snapshot(source_agents_dir)
+
+    yield
+
+    after = _content_snapshot(source_agents_dir)
+
+    problems = []
+    for name, before_info in before.items():
+        after_info = after.get(name)
+        if after_info is None:
+            problems.append(f"source file DELETED: {name}")
+        elif after_info["size"] == 0 and before_info["size"] > 0:
+            problems.append(
+                f"source file EMPTIED: {name} "
+                f"(was {before_info['size']} bytes, now 0 bytes)"
+            )
+        elif after_info["hash"] != before_info["hash"]:
+            problems.append(
+                f"source file MODIFIED: {name} "
+                f"(size {before_info['size']} -> {after_info['size']})"
+            )
+
+    assert not problems, (
+        "TEST BUG: Source agent files in src/claude_mpm/agents/ were modified.\n"
+        + "\n".join(f"  - {p}" for p in problems)
+    )
+
+
 # ===== Mock Objects Fixtures =====
 
 
@@ -371,6 +481,9 @@ def pytest_configure(config):
     config.addinivalue_line(
         "markers", "requires_network: mark test as requiring network access"
     )
+    config.addinivalue_line(
+        "markers", "regression: mark test as a regression/characterization test"
+    )
 
 
 # ===== Helper Functions =====
@@ -394,3 +507,59 @@ def create_mock_agent_file(agent_dir: Path, name: str, **kwargs) -> Path:
     agent_path = agent_dir / f"{name}.yml"
     agent_path.write_text(yaml.dump(agent_data))
     return agent_path
+
+
+# ===== Scope-Aware Deployment Fixtures =====
+
+
+@pytest.fixture
+def project_scope_dirs(tmp_path):
+    """Standard PROJECT scope directory structure.
+
+    Mimics: {project}/.claude/agents/, {project}/.claude/skills/,
+            {project}/.claude-mpm/
+    """
+    project = tmp_path / "my_project"
+    dirs = {
+        "root": project,
+        "agents": project / ".claude" / "agents",
+        "skills": project / ".claude" / "skills",
+        "archive": project / ".claude" / "agents" / "unused",
+        "config": project / ".claude-mpm",
+    }
+    for d in dirs.values():
+        d.mkdir(parents=True, exist_ok=True)
+    return dirs
+
+
+@pytest.fixture
+def user_scope_dirs(tmp_path):
+    """Standard USER scope directory structure (mocked home).
+
+    Patches Path.home() to tmp_path/home so tests don't touch the real
+    ~/.claude directory.
+
+    Returns: (dirs_dict, fake_home_path)
+    """
+    fake_home = tmp_path / "home"
+    dirs = {
+        "home": fake_home,
+        "agents": fake_home / ".claude" / "agents",
+        "skills": fake_home / ".claude" / "skills",
+        "archive": fake_home / ".claude" / "agents" / "unused",
+        "config": fake_home / ".claude-mpm",
+    }
+    for d in dirs.values():
+        d.mkdir(parents=True, exist_ok=True)
+    return dirs, fake_home
+
+
+@pytest.fixture
+def both_scopes(project_scope_dirs, user_scope_dirs):
+    """Provides both scope directory structures for cross-scope isolation tests."""
+    user_dirs, fake_home = user_scope_dirs
+    return {
+        "project": project_scope_dirs,
+        "user": user_dirs,
+        "fake_home": fake_home,
+    }

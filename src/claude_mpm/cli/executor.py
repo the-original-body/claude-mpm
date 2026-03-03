@@ -15,10 +15,13 @@ from .commands import (
     manage_agents,
     manage_configure,
     manage_debug,
+    manage_gh,
     manage_mcp,
     manage_memory,
+    manage_messages,
     manage_monitor,
     manage_tickets,
+    message_queue,
     run_doctor,
     run_session,
     show_info,
@@ -168,6 +171,45 @@ def execute_command(command: str, args) -> int:
         from .commands.oauth import manage_oauth
 
         result = manage_oauth(args)
+        return result if result is not None else 0
+
+    # Handle auth command with lazy import
+    if command == "auth":
+        from .commands.auth import manage_auth
+
+        result = manage_auth(args)
+        return result if result is not None else 0
+
+    # Handle slack command with lazy import
+    if command == "slack":
+        # Lazy import to avoid loading unless needed
+        from .commands.slack import manage_slack
+
+        result = manage_slack(args)
+        return result if result is not None else 0
+
+    # Handle setup command with lazy import
+    if command == "setup":
+        # Lazy import to avoid loading unless needed
+        from .commands.setup import manage_setup
+
+        result = manage_setup(args)
+        return result if result is not None else 0
+
+    # Handle tools command with lazy import
+    if command == "tools":
+        # Lazy import to avoid loading unless needed
+        from .commands.tools import manage_tools
+
+        result = manage_tools(args)
+        return result if result is not None else 0
+
+    # Handle provider command with lazy import
+    if command == "provider":
+        # Lazy import to avoid loading unless needed
+        from .commands.provider import manage_provider
+
+        result = manage_provider(args)
         return result if result is not None else 0
 
     # Handle profile command with lazy import
@@ -370,6 +412,9 @@ def execute_command(command: str, args) -> int:
         CLICommands.UPGRADE.value: upgrade,
         CLICommands.SKILLS.value: manage_skills,
         "debug": manage_debug,  # Add debug command
+        "gh": manage_gh,  # GitHub multi-account management
+        "message": manage_messages,  # Cross-project messaging
+        "queue": message_queue,  # Message queue management
         "mpm-init": None,  # Will be handled separately with lazy import
     }
 
@@ -401,6 +446,9 @@ def execute_command(command: str, args) -> int:
         "hook-errors",
         "autotodos",
         "oauth",
+        "setup",
+        "slack",
+        "provider",
     ]
 
     suggestion = suggest_similar_commands(command, all_commands)

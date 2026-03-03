@@ -319,7 +319,7 @@ def add_top_level_run_arguments(parser: argparse.ArgumentParser) -> None:
         "--mcp",
         type=str,
         metavar="SERVICES",
-        help="Comma-separated list of MCP services to enable for this session (e.g., --mcp kuzu-memory,mcp-ticketer,google-workspace-mcp). Use 'claude-mpm mcp list' to see available services.",
+        help="Comma-separated list of MCP services to enable for this session (e.g., --mcp kuzu-memory,mcp-ticketer,gworkspace-mcp). Use 'claude-mpm mcp list' to see available services.",
     )
 
     # Dependency checking options (for backward compatibility at top level)
@@ -466,6 +466,20 @@ def create_parser(
         pass
 
     try:
+        from .messages_parser import add_messages_subparser
+
+        add_messages_subparser(subparsers)
+    except ImportError:
+        pass
+
+    try:
+        from .queue_parser import add_queue_subparser
+
+        add_queue_subparser(subparsers)
+    except ImportError:
+        pass
+
+    try:
         from .config_parser import add_config_subparser
 
         add_config_subparser(subparsers)
@@ -525,6 +539,42 @@ def create_parser(
         from .oauth_parser import add_oauth_subparser
 
         add_oauth_subparser(subparsers)
+    except ImportError:
+        pass
+
+    try:
+        from .auth_parser import add_auth_subparser
+
+        add_auth_subparser(subparsers)
+    except ImportError:
+        pass
+
+    try:
+        from .setup_parser import add_setup_subparser
+
+        add_setup_subparser(subparsers)
+    except ImportError:
+        pass
+
+    try:
+        from .slack_parser import add_slack_subparser
+
+        add_slack_subparser(subparsers)
+    except ImportError:
+        pass
+
+    try:
+        from .tools_parser import add_tools_subparser
+
+        add_tools_subparser(subparsers)
+    except ImportError:
+        pass
+
+    # Add provider command parser for API backend management
+    try:
+        from .provider_parser import add_provider_subparser
+
+        add_provider_subparser(subparsers)
     except ImportError:
         pass
 
@@ -600,6 +650,10 @@ def create_parser(
         from ..commands.doctor import add_doctor_parser
 
         add_doctor_parser(subparsers)
+
+        from ..commands.gh import add_gh_parser
+
+        add_gh_parser(subparsers)
 
         from ..commands.postmortem import add_postmortem_parser
 

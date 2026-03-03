@@ -455,12 +455,12 @@ class SchemaValidator:
             SchemaFormat.DATETIME: lambda v: self._try_parse_date(
                 v, "%Y-%m-%dT%H:%M:%S"
             ),
-            SchemaFormat.UUID: lambda v: self._validate_uuid(v),
-            SchemaFormat.IPV4: lambda v: self._validate_ipv4(v),
-            SchemaFormat.IPV6: lambda v: self._validate_ipv6(v),
+            SchemaFormat.UUID: self._validate_uuid,
+            SchemaFormat.IPV4: self._validate_ipv4,
+            SchemaFormat.IPV6: self._validate_ipv6,
             SchemaFormat.URI: lambda v: "://" in v,
             SchemaFormat.PATH: lambda v: True,  # Any string is valid path
-            SchemaFormat.SEMVER: lambda v: self._validate_semver(v),
+            SchemaFormat.SEMVER: self._validate_semver,
         }
 
         validator = validators.get(format)
@@ -714,6 +714,105 @@ def create_logging_schema() -> ConfigSchema:
     )
 
 
+def create_memory_schema() -> ConfigSchema:
+    """Create memory backend configuration schema"""
+    # Static backend config
+    static_properties = {
+        "directory": SchemaProperty(
+            type=SchemaType.STRING,
+            description="Directory for memory files",
+            default=".claude-mpm/memories",
+            format=SchemaFormat.PATH,
+        ),
+        "max_size": SchemaProperty(
+            type=SchemaType.INTEGER,
+            description="Maximum size of memory files in bytes",
+            default=81920,
+            minimum=1024,  # 1KB minimum
+            maximum=1048576,  # 1MB maximum
+        ),
+    }
+
+    # Kuzu backend config
+    kuzu_properties = {
+        "project_root": SchemaProperty(
+            type=SchemaType.STRING,
+            description="Project root directory for kuzu",
+            format=SchemaFormat.PATH,
+        ),
+        "db_path": SchemaProperty(
+            type=SchemaType.STRING,
+            description="Database path for kuzu storage",
+            format=SchemaFormat.PATH,
+        ),
+    }
+
+    return (
+        SchemaBuilder("Memory Configuration")
+        .description("Configuration for memory backend system")
+        .enum(
+            "backend",
+            ["static", "kuzu"],
+            default="static",
+            description="Memory backend type",
+            required=True,
+        )
+        .object(
+            "static",
+            properties=static_properties,
+            description="Static file-based memory backend configuration",
+            additional_properties=False,
+        )
+        .object(
+            "kuzu",
+            properties=kuzu_properties,
+            description="Kuzu graph-based memory backend configuration",
+            additional_properties=False,
+        )
+        .default("backend", "static")
+        .default("static", {"directory": ".claude-mpm/memories", "max_size": 81920})
+        .build()
+    )
+
+
+def create_messaging_schema() -> ConfigSchema:
+    """Create cross-project messaging configuration schema"""
+    return (
+        SchemaBuilder("Messaging Configuration")
+        .boolean("enabled", default=True, description="Enable cross-project messaging")
+        .boolean(
+            "check_on_startup",
+            default=True,
+            description="Check messages on session startup",
+        )
+        .integer(
+            "command_threshold",
+            minimum=1,
+            maximum=100,
+            default=10,
+            description="Check messages every N commands",
+        )
+        .integer(
+            "time_threshold",
+            minimum=1,
+            maximum=1440,
+            default=30,
+            description="Check messages every N minutes",
+        )
+        .boolean(
+            "auto_create_tasks",
+            default=False,
+            description="Automatically create tasks from task-type messages",
+        )
+        .array(
+            "notify_priority",
+            default=["high", "urgent"],
+            description="Priority levels that trigger immediate notifications",
+        )
+        .build()
+    )
+
+
 # Export main components
 __all__ = [
     "ConfigMigration",
@@ -728,4 +827,6 @@ __all__ = [
     "create_api_schema",
     "create_database_schema",
     "create_logging_schema",
+    "create_memory_schema",
+    "create_messaging_schema",
 ]

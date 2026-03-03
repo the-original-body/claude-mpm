@@ -302,6 +302,11 @@ class UnifiedPathManager:
     CONFIG_DIR_NAME = ".claude-mpm"
     LEGACY_CONFIG_DIR_NAME = ".claude-pm"  # For migration support
 
+    @property
+    def CONFIG_DIR(self) -> str:
+        """Backwards-compatible alias for CONFIG_DIR_NAME."""
+        return self.CONFIG_DIR_NAME
+
     def __new__(cls) -> "UnifiedPathManager":
         """Singleton pattern to ensure single instance."""
         if cls._instance is None:
@@ -408,6 +413,15 @@ class UnifiedPathManager:
     @lru_cache(maxsize=1)
     def project_root(self) -> Path:
         """Get the current project root directory."""
+        # CRITICAL: Respect CLAUDE_MPM_USER_PWD if set (user's launch directory)
+        # This ensures we use the directory where user launched from, not a subdirectory
+        import os
+
+        user_pwd = os.environ.get("CLAUDE_MPM_USER_PWD")
+        if user_pwd:
+            logger.debug(f"Using CLAUDE_MPM_USER_PWD as project root: {user_pwd}")
+            return Path(user_pwd)
+
         current = _safe_cwd()
         while current != current.parent:
             for marker in self._project_markers:

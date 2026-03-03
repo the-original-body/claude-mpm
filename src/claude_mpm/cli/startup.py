@@ -9,6 +9,7 @@ Part of cli/__init__.py refactoring to reduce file size and improve modularity.
 """
 
 import contextlib
+import json
 import os
 import sys
 from pathlib import Path
@@ -84,10 +85,10 @@ def cleanup_user_level_hooks() -> bool:
 
 
 def sync_hooks_on_startup(quiet: bool = False) -> bool:
-    """Ensure hooks are up-to-date on startup.
+    """Sync hooks on startup if not already installed.
 
     WHY: Users can have stale hook configurations in settings.json that cause errors.
-    Reinstalling hooks ensures the hook format matches the current code.
+    This ensures hooks exist without reinstalling on every startup (which causes lock conflicts).
 
     DESIGN DECISION: Shows brief status message on success for user awareness.
     Failures are logged but don't prevent startup to ensure claude-mpm
@@ -127,8 +128,26 @@ def sync_hooks_on_startup(quiet: bool = False) -> bool:
         if is_tty:
             print("Installing project hooks...", end=" ", flush=True)
 
-        # Reinstall hooks (force=True ensures update)
-        success = installer.install_hooks(force=True)
+        # Check if hooks need installation
+        status = installer.get_status()
+        if not status.get("installed", False):
+            # Hooks not installed, install them now
+            success = installer.install_hooks(force=False)
+        elif _has_stale_hook_paths(installer.settings_file):
+            # Settings say installed=True but at least one registered script path
+            # is missing on disk (e.g. after a Python version upgrade changes the
+            # site-packages directory).  Force reinstall to write fresh paths.
+            from ..core.logger import get_logger as _get_logger
+
+            _get_logger("startup").info(
+                "Stale hook paths detected in %s — forcing reinstall",
+                installer.settings_file,
+            )
+            success = installer.install_hooks(force=True)
+        else:
+            # Hooks already installed and paths are valid, skip reinstall
+            # to avoid file lock conflicts
+            success = True
 
         if is_tty:
             if success:
@@ -149,6 +168,50 @@ def sync_hooks_on_startup(quiet: bool = False) -> bool:
         logger = get_logger("startup")
         logger.warning(f"Hook sync failed (non-fatal): {e}")
         return False
+
+
+def _has_stale_hook_paths(settings_file: Path) -> bool:
+    """Return True if any hook command in settings_file uses a missing absolute path.
+
+    Hooks that reference absolute paths (e.g. into a Python site-packages
+    directory) become stale when the interpreter is upgraded and the old
+    site-packages tree is removed.  Entry-point style commands such as
+    ``"claude-hook"`` are resolved via PATH at runtime and are therefore
+    not validated here.
+
+    Args:
+        settings_file: Path to the project-level settings.local.json file.
+
+    Returns:
+        bool: True if at least one registered absolute script path does not
+              exist on disk, False otherwise.
+    """
+    if not settings_file.exists():
+        return False
+
+    try:
+        with settings_file.open() as f:
+            settings = json.load(f)
+
+        hooks = settings.get("hooks", {})
+        for hook_list in hooks.values():
+            if not isinstance(hook_list, list):
+                continue
+            for hook_entry in hook_list:
+                if not isinstance(hook_entry, dict):
+                    continue
+                for cmd_entry in hook_entry.get("hooks", []):
+                    if not isinstance(cmd_entry, dict):
+                        continue
+                    command = cmd_entry.get("command", "")
+                    # Only validate absolute paths; PATH-resolved commands are fine
+                    if command.startswith("/") and not Path(command).exists():
+                        return True
+    except Exception:
+        # If we cannot read the file, don't block startup
+        pass
+
+    return False
 
 
 def _count_installed_hooks(settings_file: Path) -> int:
@@ -270,6 +333,26 @@ def setup_early_environment(argv):
     """
     import logging
 
+    # CRITICAL: Capture launch directory BEFORE anything changes cwd
+    # This preserves the user's starting directory for project root detection
+    # Use shell's PWD instead of Path.cwd() because Python's cwd may already be changed
+    # during module imports (observed with uv tool wrappers)
+    #
+    # IMPORTANT: Only skip this when explicitly called as a subprocess from another
+    # claude-mpm process (indicated by CLAUDE_MPM_IS_SUBPROCESS=1). This prevents
+    # a stale CLAUDE_MPM_USER_PWD in the user's shell environment from causing
+    # claude-mpm to use the wrong project directory.
+    if os.environ.get("CLAUDE_MPM_IS_SUBPROCESS") != "1":
+        from pathlib import Path
+
+        # Prefer shell PWD (more reliable than Path.cwd() which may already be changed)
+        pwd_from_shell = os.environ.get("PWD")
+        cwd_from_python = str(Path.cwd())
+
+        # Use PWD if available (set by shell before Python starts)
+        cwd_value = pwd_from_shell if pwd_from_shell else cwd_from_python
+        os.environ["CLAUDE_MPM_USER_PWD"] = cwd_value
+
     # Disable telemetry and set cleanup flags early
     os.environ.setdefault("DISABLE_TELEMETRY", "1")
     os.environ.setdefault("CLAUDE_MPM_SKIP_CLEANUP", "0")
@@ -305,6 +388,16 @@ def setup_early_environment(argv):
     if "configure" in argv or (len(argv) > 0 and argv[0] == "configure"):
         os.environ["CLAUDE_MPM_SKIP_CLEANUP"] = "1"
 
+    # Apply API provider configuration early (before Claude Code launches)
+    # This sets CLAUDE_CODE_USE_BEDROCK, ANTHROPIC_MODEL, etc.
+    try:
+        from ..config.api_provider import apply_api_provider_config
+
+        apply_api_provider_config()
+    except Exception:  # nosec B110
+        # Non-critical - if config loading fails, use defaults
+        pass
+
     return argv
 
 
@@ -312,8 +405,13 @@ def should_skip_background_services(args, processed_argv):
     """
     Determine if background services should be skipped for this command.
 
-    WHY: Some commands (help, version, configure, doctor, oauth) don't need
-    background services and should start faster.
+    WHY: Some commands (help, version, configure, doctor, oauth, setup, slack) don't need
+    background services and should start faster. Read-only commands like `agents list`
+    and `skills list` should also skip startup for fast response.
+
+    IMPORTANT: Setup commands (setup, slack, oauth) MUST run before Claude Code launches.
+    These commands configure services and dependencies needed by Claude Code itself.
+    Running them after launch is too late and causes setup to fail.
 
     NOTE: Headless mode with --resume skips background services because:
     - Each claude-mpm call is a NEW process (orchestrators like Vibe Kanban)
@@ -338,20 +436,31 @@ def should_skip_background_services(args, processed_argv):
         return True
 
     skip_commands = ["--version", "-v", "--help", "-h"]
-    return any(cmd in (processed_argv or sys.argv[1:]) for cmd in skip_commands) or (
-        hasattr(args, "command")
-        and args.command
-        in [
-            "info",
-            "doctor",
-            "config",
-            "mcp",
-            "configure",
-            "hook-errors",
-            "autotodos",
-            "oauth",
-        ]
-    )
+
+    # Check for fast read-only commands that should skip startup
+    # These commands only read cached data and don't need Claude Code
+    if hasattr(args, "command"):
+        command = args.command
+
+        # Skip background services for lightweight commands
+        from claude_mpm.cli.command_config import is_lightweight_command
+
+        if is_lightweight_command(command):
+            return True
+
+        # Skip background services for read-only subcommands
+        # These only read from cached data in ~/.claude-mpm/cache/
+        # Format: each command has its own {command}_command attribute (e.g., agents_command, skills_command)
+        if command == "agents":
+            agents_cmd = getattr(args, "agents_command", None)
+            if agents_cmd == "list":
+                return True
+        elif command == "skills":
+            skills_cmd = getattr(args, "skills_command", None)
+            if skills_cmd == "list":
+                return True
+
+    return any(cmd in (processed_argv or sys.argv[1:]) for cmd in skip_commands)
 
 
 def setup_configure_command_environment(args):
@@ -506,7 +615,36 @@ def deploy_output_style_on_startup():
                 break
 
         if all_up_to_date:
-            # Show feedback that output styles are ready
+            # Styles are ready, but ensure activation is set
+            # Check if we need to activate default style
+            # Only activate if no style is currently set (preserve user choices)
+            settings = {}
+            if manager.settings_file.exists():
+                try:
+                    settings = json.loads(manager.settings_file.read_text())
+                except json.JSONDecodeError:
+                    pass
+
+            current_style = settings.get("outputStyle")
+            # Migrate from legacy key if needed
+            if current_style is None:
+                legacy_style = settings.get("activeOutputStyle")
+                if legacy_style is not None:
+                    # Convert display name to style ID for migration
+                    style_id_map = {
+                        "Claude MPM": "claude_mpm",
+                        "Claude MPM Teacher": "claude_mpm_teacher",
+                        "Claude MPM Research": "claude_mpm_research",
+                    }
+                    current_style = style_id_map.get(
+                        legacy_style,
+                        legacy_style.lower().replace(" ", "_")
+                        if isinstance(legacy_style, str)
+                        else legacy_style,
+                    )
+            if current_style is None or current_style == "default":
+                manager._activate_output_style("Claude MPM", is_fresh_install=False)
+
             if sys.stdout.isatty():
                 print("✓ Output styles ready", flush=True)
             return
@@ -1297,12 +1435,12 @@ def show_agent_summary():
                 f
                 for f in all_md_files
                 if (
-                    "/agents/" in str(f)
+                    "agents" in f.relative_to(cache_dir).parts
                     and f.name.lower() not in pm_templates
                     and f.name.lower() not in doc_files
                     and f.name.lower() != "base-agent.md"
                     and not any(
-                        part in str(f).split("/")
+                        part in f.relative_to(cache_dir).parts
                         for part in ["dist", "build", ".cache"]
                     )
                 )
@@ -1542,6 +1680,36 @@ def sync_deployment_on_startup(force_sync: bool = False) -> None:
     show_agent_summary()  # Display agent counts after deployment
 
 
+def generate_dynamic_domain_authority_skills():
+    """Generate dynamic skills for agent and tool selection.
+
+    WHY: PM needs up-to-date information about available agents and configured
+    tools to make intelligent delegation decisions. These skills are regenerated
+    on every startup to reflect current system state.
+
+    Generated Skills:
+    - mpm-select-agents.md: Lists all available agents with capabilities
+    - mpm-select-tools.md: Lists all configured MCP/CLI tools with help text
+
+    Location: ~/.claude-mpm/skills/dynamic/
+    """
+    try:
+        from claude_mpm.services.dynamic_skills_generator import (
+            DynamicSkillsGenerator,
+        )
+
+        generator = DynamicSkillsGenerator()
+        generator.generate_all()
+    except Exception as e:
+        # Non-fatal: Skills will fall back to existing or manual selection
+        import sys
+
+        print(
+            f"Warning: Could not generate dynamic domain authority skills: {e}",
+            file=sys.stderr,
+        )
+
+
 def run_background_services(force_sync: bool = False, headless: bool = False):
     """
     Initialize all background services on startup.
@@ -1554,15 +1722,15 @@ def run_background_services(force_sync: bool = False, headless: bool = False):
     file creation in project .claude/ directories.
     See: SystemInstructionsDeployer and agent_deployment.py line 504-509
 
+    NOTE: Startup migrations now run in cli/__init__.py BEFORE the banner
+    This allows migration results to be displayed in the startup banner
+    See: cli/__init__.py lines 77-83
+
     Args:
         force_sync: Force download even if cache is fresh (bypasses ETag).
         headless: If True, redirect stdout to stderr during startup.
                   This keeps stdout clean for JSON streaming in headless mode.
     """
-    # NOTE: Startup migrations now run in cli/__init__.py BEFORE the banner
-    # This allows migration results to be displayed in the startup banner
-    # See: cli/__init__.py lines 77-83
-
     # Wrap all startup operations in quiet_startup_context for headless mode
     # This redirects stdout to stderr, keeping stdout clean for JSON output
     with quiet_startup_context(headless=headless):
@@ -1587,6 +1755,10 @@ def run_background_services(force_sync: bool = False, headless: bool = False):
         )  # Override layer: Git-based skills (takes precedence)
         discover_and_link_runtime_skills()  # Discovery: user-added skills
         show_skill_summary()  # Display skill counts after deployment
+
+        # Generate dynamic domain authority skills for PM
+        generate_dynamic_domain_authority_skills()
+
         verify_and_show_pm_skills()  # PM skills verification and status
 
         deploy_output_style_on_startup()
@@ -1671,15 +1843,23 @@ def check_mcp_auto_configuration():
     a 10-second timeout. Shows progress feedback during checks to avoid
     appearing frozen.
 
-    OPTIMIZATION: Skip ALL MCP checks for doctor and configure commands to avoid
-    duplicate checks (doctor performs its own comprehensive check, configure
-    allows users to select services).
+    OPTIMIZATION: Skip ALL MCP checks for doctor, configure, and setup commands to
+    avoid conflicts (doctor performs its own comprehensive check, configure allows
+    users to select services, setup has exclusive control over .mcp.json during
+    installation).
     """
-    # Skip MCP service checks for the doctor and configure commands
+    # Check if auto-config should be skipped via environment variable
+    # (set by configure command when launching run)
+    if os.getenv("CLAUDE_MPM_SKIP_AUTO_CONFIG") == "1":
+        os.environ.pop("CLAUDE_MPM_SKIP_AUTO_CONFIG", None)  # Clear immediately
+        return
+
+    # Skip MCP service checks for the doctor, configure, and setup commands
     # The doctor command performs its own comprehensive MCP service check
     # The configure command allows users to configure which services to enable
-    # Running both would cause duplicate checks and log messages (9 seconds apart)
-    if len(sys.argv) > 1 and sys.argv[1] in ("doctor", "configure"):
+    # The setup command installs MCP servers with exclusive control over .mcp.json
+    # Running auto-configuration during these commands would cause conflicts
+    if len(sys.argv) > 1 and sys.argv[1] in ("doctor", "configure", "setup"):
         return
 
     try:

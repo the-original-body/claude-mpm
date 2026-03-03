@@ -123,6 +123,8 @@ dashboard_integration_test.html
 HUD_*.md
 DEBUGGING_*.md
 TOOL_RESULT_*.md
+ENHANCED_*.md
+tests/demo/
 
 # Temporary JSON reports
 *_qa_report*.json
@@ -358,6 +360,9 @@ dist/
 .claude.json
 # Research docs (work in progress)
 docs/research/*.md
+
+# AI-generated planning/research artifacts (branch-local, not for main)
+docs-local/
 mcp-browser-extensions/
 tests/eval/reports/
 ccusage.json
@@ -371,3 +376,10 @@ chunk-graph.json
 
 # Generated Homebrew Formula (managed separately in homebrew-tap)
 Formula/
+
+
+# gworkspace-mcp OAuth tokens (project-level)
+.gworkspace-mcp/
+
+# GitHub account marker (safe to commit)
+# .gh-account

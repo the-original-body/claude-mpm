@@ -47,6 +47,7 @@ class CLICommands(str, Enum):
     UPGRADE = "upgrade"
     SKILLS = "skills"
     OAUTH = "oauth"
+    PROVIDER = "provider"
 
     def with_prefix(self, prefix: CLIPrefix = CLIPrefix.MPM) -> str:
         """Get command with prefix."""
@@ -175,6 +176,7 @@ class SkillsCommands(str, Enum):
     CONFIG = "config"
     CONFIGURE = "configure"  # Interactive skills selection (like agents configure)
     SELECT = "select"  # Interactive topic-grouped skill selector
+    OPTIMIZE = "optimize"  # Intelligent skill recommendation based on project analysis
     # GitHub deployment commands
     DEPLOY_FROM_GITHUB = "deploy-github"
     LIST_AVAILABLE = "list-available"
