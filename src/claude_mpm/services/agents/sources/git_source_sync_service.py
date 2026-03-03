@@ -23,6 +23,10 @@ from claude_mpm.core.file_utils import get_file_hash
 from claude_mpm.services.agents.deployment.multi_source_deployment_service import (
     _normalize_agent_name,
 )
+from claude_mpm.services.agents.deployment_utils import (
+    deploy_agent_file,
+    normalize_deployment_filename,
+)
 from claude_mpm.services.agents.sources.agent_sync_state import AgentSyncState
 from claude_mpm.utils.progress import create_progress_bar
 
@@ -753,10 +757,11 @@ class GitSourceSyncService:
         # Fallback to known agent list if API fails
         logger.debug("Using fallback agent list")
         return [
-            "research.md",
+            "research-agent.md",
             "engineer.md",
-            "qa.md",
-            "documentation.md",
+            "qa-agent.md",
+            "documentation-agent.md",
+            "web-qa-agent.md",
             "security.md",
             "ops.md",
             "ticketing.md",
@@ -1036,7 +1041,6 @@ class GitSourceSyncService:
             >>> result = service.deploy_agents_to_project(Path("/my/project"))
             >>> print(f"Deployed {len(result['deployed'])} agents")
         """
-        import shutil
 
         from claude_mpm.core.config import Config
 
@@ -1107,55 +1111,39 @@ class GitSourceSyncService:
 
         for agent_path in agent_list:
             try:
-                cache_file = self.cache_dir / agent_path
+                # Resolve normalized agent path to actual cache file
+                cache_file = self._resolve_cache_path(agent_path)
 
-                if not cache_file.exists():
-                    logger.warning(f"Cache file not found: {agent_path}")
+                if not cache_file or not cache_file.exists():
+                    logger.warning(f"Agent not found in cache: {agent_path}")
                     results["failed"].append(agent_path)
                     continue
 
-                # Flatten nested path for deployment (engineer/core/engineer.md → engineer.md)
-                deploy_filename = Path(agent_path).name
-                deploy_file = deployment_dir / deploy_filename
+                # Phase 3 Fix (Issue #299): Use unified deploy_agent_file() function
+                # This ensures identical behavior between GitSourceSyncService
+                # and SingleTierDeploymentService
+                result = deploy_agent_file(
+                    source_file=cache_file,
+                    deployment_dir=deployment_dir,
+                    cleanup_legacy=True,
+                    ensure_frontmatter=True,
+                    force=force,
+                )
 
-                # Check if update needed (compare content, not just mtime)
-                # DESIGN: Use content hash comparison for reliable change detection
-                # Mtime comparison can fail when cache downloads have older timestamps
-                should_deploy = force
-                was_existing = deploy_file.exists()
+                # Get normalized filename for tracking
+                deploy_filename = normalize_deployment_filename(Path(agent_path).name)
 
-                if not force and was_existing:
-                    # Compare file contents using hash
-                    cache_content = cache_file.read_bytes()
-                    deploy_content = deploy_file.read_bytes()
-                    should_deploy = cache_content != deploy_content
-
-                if not should_deploy and was_existing:
-                    results["skipped"].append(deploy_filename)
-                    logger.debug(f"Skipped (up-to-date): {deploy_filename}")
-                    continue
-
-                # Copy from cache to deployment
-                shutil.copy2(cache_file, deploy_file)
-
-                # Track result
-                if deploy_file.exists():
-                    if was_existing:
-                        results["updated"].append(deploy_filename)
-                        logger.info(f"Updated: {deploy_filename}")
-                    else:
+                if result.success:
+                    if result.action == "deployed":
                         results["deployed"].append(deploy_filename)
-                        logger.info(f"Deployed: {deploy_filename}")
+                    elif result.action == "updated":
+                        results["updated"].append(deploy_filename)
+                    elif result.action == "skipped":
+                        results["skipped"].append(deploy_filename)
                 else:
                     results["failed"].append(deploy_filename)
-                    logger.error(f"Failed to deploy: {deploy_filename}")
+                    logger.error(f"Failed to deploy: {deploy_filename}: {result.error}")
 
-            except PermissionError as e:
-                logger.error(f"Permission denied deploying {agent_path}: {e}")
-                results["failed"].append(Path(agent_path).name)
-            except OSError as e:
-                logger.error(f"IO error deploying {agent_path}: {e}")
-                results["failed"].append(Path(agent_path).name)
             except Exception as e:
                 logger.error(f"Unexpected error deploying {agent_path}: {e}")
                 results["failed"].append(Path(agent_path).name)
@@ -1169,21 +1157,58 @@ class GitSourceSyncService:
 
         return results
 
+    def _resolve_cache_path(self, agent_path: str) -> Optional[Path]:
+        """Resolve normalized agent path to actual cache file.
+
+        Handles git-nested cache structure by searching for the agent file
+        within the cache directory tree. Supports both flat and nested cache
+        structures for backward compatibility.
+
+        Args:
+            agent_path: Normalized path like 'ops/platform/aws-ops.md'
+
+        Returns:
+            Full cache path or None if not found
+
+        Example:
+            Input:  'ops/platform/aws-ops.md'
+            Finds:  ~/.claude-mpm/cache/agents/github-remote/claude-mpm-agents/agents/ops/platform/aws-ops.md
+            Returns: Full resolved Path object
+        """
+        # Search for file in cache (handles nested source/repo structure)
+        candidates = list(self.cache_dir.rglob(f"**/agents/{agent_path}"))
+
+        if candidates:
+            # Return first match (should only be one due to deduplication)
+            return candidates[0]
+
+        # Fallback: Check flat cache structure (legacy/backward compatibility)
+        flat_path = self.cache_dir / agent_path
+        if flat_path.exists():
+            return flat_path
+
+        return None
+
     def _discover_cached_agents(self) -> List[str]:
         """Discover all agent files currently in cache.
 
-        Scans cache directory for .md and .json files, preserving
-        nested directory structure in returned paths.
+        Scans cache directory for .md and .json files, filtering to only
+        files within the 'agents/' subdirectory (excludes repo metadata).
 
         Returns:
-            List of agent file paths relative to cache directory
-            (e.g., ["research.md", "engineer/core/engineer.md"])
+            List of agent file paths relative to 'agents/' directory
+            (e.g., ["ops/ops.md", "documentation/documentation.md"])
 
         Algorithm:
         1. Walk cache directory recursively
         2. Find all .md and .json files
-        3. Convert to paths relative to cache root
-        4. Filter out README.md and .gitignore
+        3. Filter to only paths containing 'agents/' directory
+        4. Strip path prefix to get relative path from 'agents/'
+        5. Deduplicate paths (handles git-nested cache structure)
+
+        Example:
+            Cache: github-remote/claude-mpm-agents/agents/ops/platform/aws-ops.md
+            Returns: ops/platform/aws-ops.md
         """
         cached_agents = []
 
@@ -1191,15 +1216,29 @@ class GitSourceSyncService:
             logger.warning(f"Cache directory does not exist: {self.cache_dir}")
             return []
 
-        for file_path in self.cache_dir.rglob("*"):
-            if file_path.is_file() and file_path.suffix in {".md", ".json"}:
-                # Get relative path from cache directory
-                relative_path = file_path.relative_to(self.cache_dir)
-                relative_str = str(relative_path)
+        for file_path in self.cache_dir.rglob("*.md"):
+            # Get relative path from cache directory
+            relative_path = file_path.relative_to(self.cache_dir)
 
-                # Exclude README and .gitignore
-                if relative_str not in ["README.md", ".gitignore"]:
-                    cached_agents.append(relative_str)
+            # Filter to only agent files (exclude repo metadata like CHANGELOG.md)
+            # Expected path: github-remote/claude-mpm-agents/agents/category/agent.md
+            parts = relative_path.parts
 
-        logger.debug(f"Discovered {len(cached_agents)} cached agents")
-        return sorted(cached_agents)
+            # Must contain 'agents' directory in path
+            if "agents" not in parts:
+                continue
+
+            # Find agents/ directory index and keep only path after it
+            try:
+                agents_idx = parts.index("agents")
+                # Keep only path after 'agents/' (e.g., ops/platform/aws-ops.md)
+                agent_relative = Path(*parts[agents_idx + 1 :])
+                cached_agents.append(str(agent_relative))
+            except (ValueError, IndexError):
+                # 'agents' not in parts or empty path after agents/
+                continue
+
+        # Deduplicate and sort
+        unique_agents = sorted(set(cached_agents))
+        logger.debug(f"Discovered {len(unique_agents)} cached agents")
+        return unique_agents

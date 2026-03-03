@@ -110,6 +110,70 @@ Proactively identify and suggest improvements discovered during work:
 - **Limit scope creep**: Maximum 1-2 suggestions per task unless critical (security/data loss)
 - **Critical issues**: Security vulnerabilities and data loss risks should be flagged immediately regardless of limit
 
+## Minimalism Principle
+
+**More is not better. Less is better.**
+
+### Core Directive
+Accomplish the task with the **minimum necessary additions**. Every line of code, every word of documentation, and every file created should justify its existence.
+
+### Before Adding, Ask:
+1. **Can this be removed instead?** Delete dead code, unused imports, redundant comments
+2. **Does this already exist?** Search before creating - reuse existing utilities
+3. **Is this essential?** If removing it doesn't break functionality, remove it
+4. **Can it be simpler?** Prefer 10 clear lines over 50 clever ones
+
+### Implementation Guidelines
+- **Code**: Prefer deleting code to adding code. Smaller PRs are better PRs.
+- **Documentation**: One clear sentence beats three vague paragraphs.
+- **Tests**: Test behavior, not implementation. Fewer focused tests beat many brittle ones.
+- **Features**: Build the 80% solution, not the 100% solution.
+
+### Anti-Patterns to Avoid
+- ❌ Adding "nice to have" features not in requirements
+- ❌ Creating abstractions for single use cases
+- ❌ Writing comments that repeat what code says
+- ❌ Adding configuration options "just in case"
+- ❌ Verbose error messages when simple ones suffice
+
+### Quality Metric
+**If you can accomplish the same result with less code/words/files, do it.**
+
+## Performance-First Engineering
+
+**Correct code that performs poorly is incomplete code.**
+
+All engineering agents must write code that is not only correct but optimized for performance. Performance is not a post-hoc concern — it is a design constraint from the start.
+
+### Performance Principles
+
+1. **Choose the right algorithm and data structure first.** No amount of micro-optimization fixes an O(n²) algorithm that should be O(n log n). Think about time and space complexity before writing the first line.
+
+2. **Minimize allocations and copies.** Prefer in-place operations, reuse buffers, avoid unnecessary string concatenation in loops, and be conscious of memory allocation patterns in hot paths.
+
+3. **Reduce I/O and network round-trips.** Batch database queries instead of N+1 loops. Use bulk operations. Prefetch what you need. Cache what you'll reuse. Every network call and disk read is orders of magnitude slower than computation.
+
+4. **Write for the common case, guard the edge case.** Fast paths should have zero overhead from edge-case handling. Use early returns, short-circuit evaluation, and branch prediction-friendly ordering.
+
+5. **Measure before and after.** When optimizing existing code, profile first. When writing new code, consider the expected data scale and access patterns. Include benchmark context in commit messages for performance changes.
+
+### When Performance Conflicts with Readability
+
+- **Default to readable code** for non-hot paths (most code)
+- **Optimize aggressively** for hot paths, loops processing large datasets, and latency-sensitive handlers — but document WHY with a comment
+- **Never sacrifice correctness** for performance — correct and slow beats fast and wrong
+
+### Anti-Patterns to Flag
+
+- ❌ N+1 database queries in loops
+- ❌ Synchronous I/O blocking event loops
+- ❌ Unbounded in-memory collection growth
+- ❌ Repeated computation that could be cached or memoized
+- ❌ String concatenation in tight loops (use builders/buffers)
+- ❌ Loading entire datasets when pagination or streaming is available
+
+---
+
 ## Agent Responsibilities
 
 ### What Agents DO

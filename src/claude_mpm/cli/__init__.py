@@ -14,16 +14,12 @@ import sys
 from pathlib import Path
 from typing import Optional
 
-from claude_mpm.config.paths import paths
-
 from ..constants import CLICommands
 from ..utils.progress import ProgressBar
 from .executor import ensure_run_attributes, execute_command
-from .helpers import (
-    handle_missing_configuration,
-    has_configuration_file,
-    should_skip_config_check,
-)
+
+# handle_missing_configuration, has_configuration_file, should_skip_config_check
+# removed - startup config prompt disabled, users can run `/mpm-configure` manually
 from .parser import create_parser, preprocess_args
 from .startup import (
     run_background_services,
@@ -36,11 +32,11 @@ from .startup_display import display_startup_banner, should_show_banner
 from .utils import ensure_directories, setup_logging
 
 # Version resolution
+# CRITICAL: Don't import 'paths' here - it triggers UnifiedPathManager initialization
+# before setup_early_environment() can set CLAUDE_MPM_USER_PWD
 package_version_file = Path(__file__).parent.parent / "VERSION"
 if package_version_file.exists():
     __version__ = package_version_file.read_text().strip()
-elif paths.version_file.exists():
-    __version__ = paths.version_file.read_text().strip()
 else:
     try:
         from .. import __version__
@@ -56,14 +52,11 @@ def main(argv: Optional[list] = None):
     processed_argv = preprocess_args(argv)
     args = parser.parse_args(processed_argv)
 
-    help_version_flags = ["--version", "-v", "--help", "-h"]
-    is_help_or_version = any(
-        flag in (processed_argv or sys.argv[1:]) for flag in help_version_flags
-    )
-
-    if not has_configuration_file() and not is_help_or_version:
-        if not should_skip_config_check(getattr(args, "command", None)):
-            handle_missing_configuration()
+    # Configuration prompt removed - users can run `/mpm-configure` manually
+    # See: handle_missing_configuration() in helpers.py if re-enabling
+    # if not has_configuration_file() and not is_help_or_version:
+    #     if not should_skip_config_check(getattr(args, "command", None)):
+    #         handle_missing_configuration()
 
     setup_configure_command_environment(args)
 

@@ -153,7 +153,7 @@ class PRTemplateService:
 
 ---
 🤖 Generated with Claude MPM Agent Improver
-Co-Authored-By: agent-improver <noreply@anthropic.com>
+Co-Authored-By: Claude MPM <https://github.com/bobmatnyc/claude-mpm>
 """
 
     def generate_skill_pr_body(
@@ -219,7 +219,7 @@ Co-Authored-By: agent-improver <noreply@anthropic.com>
 {related_section}
 ---
 🤖 Generated with Claude MPM Skills Manager
-Co-Authored-By: skills-manager <noreply@anthropic.com>
+Co-Authored-By: Claude MPM <https://github.com/bobmatnyc/claude-mpm>
 """
 
     def validate_conventional_commit(self, message: str) -> bool:
@@ -245,7 +245,7 @@ Co-Authored-By: skills-manager <noreply@anthropic.com>
             return False
 
         # Extract first line (title)
-        first_line = message.split("\n")[0]
+        first_line = message.split("\n", maxsplit=1)[0]
 
         # Check basic format: type(scope): description
         if ":" not in first_line:
@@ -263,8 +263,14 @@ Co-Authored-By: skills-manager <noreply@anthropic.com>
         if "(" not in type_scope or ")" not in type_scope:
             return False
 
-        # Extract type
+        # Extract type and scope
         commit_type = type_scope.split("(")[0].strip()
+        scope_match = type_scope[len(commit_type) :]
+        # Verify scope is not empty (e.g., "feat()" is invalid)
+        if scope_match.startswith("(") and scope_match.endswith(")"):
+            scope = scope_match[1:-1].strip()
+            if not scope:
+                return False
 
         # Validate type is recognized
         if commit_type not in self.COMMIT_TYPES:

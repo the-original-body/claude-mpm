@@ -4,6 +4,7 @@ Startup display banner for Claude MPM.
 Shows welcome message, version info, ASCII art, and what's new section.
 """
 
+import json
 import os
 import re
 import shutil
@@ -11,7 +12,10 @@ import subprocess  # nosec B404 - required for git operations
 from pathlib import Path
 from typing import List
 
+from claude_mpm.core.logging_utils import get_logger
 from claude_mpm.utils.git_analyzer import is_git_repository
+
+logger = get_logger(__name__)
 
 # ANSI color codes
 CYAN = "\033[36m"  # Cyan for header highlight (Claude Code style)
@@ -196,6 +200,80 @@ def _get_alien_art() -> List[str]:
     ]
 
 
+def _get_active_model_display_name() -> str:
+    """Detect the active Claude Code model and return a human-friendly name.
+
+    Detection priority:
+    1. ANTHROPIC_MODEL env var (set by claude-mpm config or user environment)
+    2. Project .claude/settings.local.json "model" key
+    3. Project .claude/settings.json "model" key
+    4. Global ~/.claude/settings.json "model" key
+    5. Fall back to "Default" (Claude Code's own default)
+
+    Returns:
+        Human-friendly model name for display (e.g. "Opus 4.6", "Sonnet", "Default")
+    """
+    # Alias map: raw model identifiers -> display names
+    MODEL_DISPLAY: dict[str, str] = {
+        # Short aliases
+        "opus": "Opus",
+        "sonnet": "Sonnet",
+        "haiku": "Haiku",
+        # Specific versioned models (most recent first — ordering matters for prefix matching)
+        "claude-opus-4-6": "Opus 4.6",
+        "claude-sonnet-4-6": "Sonnet 4.6",
+        "claude-haiku-4-6": "Haiku 4.6",
+        "claude-opus-4-5": "Opus 4.5",
+        "claude-sonnet-4-5": "Sonnet 4.5",
+        "claude-haiku-4-5": "Haiku 4.5",
+        "claude-3-7-sonnet-20250219": "Sonnet 3.7",
+        "claude-3-5-sonnet-20241022": "Sonnet 3.5",
+        "claude-3-5-haiku-20241022": "Haiku 3.5",
+        "claude-3-opus-20240229": "Opus 3",
+    }
+
+    def _friendly(raw: str) -> str:
+        """Convert a raw model identifier to a display name."""
+        if not raw:
+            return "Default"
+        lower = raw.lower().strip()
+        # Exact match first
+        if lower in MODEL_DISPLAY:
+            return MODEL_DISPLAY[lower]
+        # Prefix match for dated variants (e.g. "claude-opus-4-6-20260101")
+        for key, display in MODEL_DISPLAY.items():
+            if lower.startswith(key):
+                return display
+        # Fallback: show the raw model identifier, truncated for display
+        return raw[:30] if len(raw) > 30 else raw
+
+    # 1. ANTHROPIC_MODEL env var
+    env_model = os.environ.get("ANTHROPIC_MODEL", "").strip()
+    if env_model:
+        return _friendly(env_model)
+
+    # 2-4. Check Claude settings files (project-local first, then global)
+    settings_paths = [
+        Path.cwd() / ".claude" / "settings.local.json",
+        Path.cwd() / ".claude" / "settings.json",
+        Path.home() / ".claude" / "settings.json",
+    ]
+    for settings_path in settings_paths:
+        try:
+            if settings_path.exists():
+                with open(settings_path) as f:
+                    data = json.load(f)
+                model_val = data.get("model", "").strip()
+                if model_val:
+                    return _friendly(model_val)
+        except (json.JSONDecodeError, OSError, KeyError, ValueError) as exc:
+            logger.debug("Could not read model from %s: %s", settings_path, exc)
+            continue
+
+    # 5. Claude Code's own default (no override configured anywhere)
+    return "Default"
+
+
 def _format_logging_status(logging_level: str) -> str:
     """Format logging status with helpful indicator."""
     if logging_level == "OFF":
@@ -341,7 +419,7 @@ def display_startup_banner(
     # Build header line with cyan highlight (Claude Code style)
     header = f"─── Claude MPM v{version} "
     header_padding = "─" * (terminal_width - len(header) - 2)  # -2 for ╭╮
-    top_line = f"{CYAN}╭{header}{header_padding}╮{RESET}"
+    top_line = f"╭{CYAN}{header}{header_padding}{RESET}╮"
 
     # Build content lines (plain text, no color)
     lines = []
@@ -491,17 +569,37 @@ def display_startup_banner(
     separator = "─" * right_panel_width
     agent_count = _count_deployed_agents()
     skill_count = _count_mpm_skills()
+    active_model = _get_active_model_display_name()
 
-    # Format: "Sonnet 4.5 · 44 agents, 19 skills"
+    # Format: "Opus 4.6 · 44 agents, 19 skills"
     if agent_count > 0 or skill_count > 0:
         counts_text = []
         if agent_count > 0:
             counts_text.append(f"{agent_count} agent{'s' if agent_count != 1 else ''}")
         if skill_count > 0:
             counts_text.append(f"{skill_count} skill{'s' if skill_count != 1 else ''}")
-        model_info = f"Sonnet 4.5 · {', '.join(counts_text)}"
+        model_info = f"{active_model} · {', '.join(counts_text)}"
     else:
-        model_info = "Sonnet 4.5 · Claude MPM"
+        model_info = f"{active_model} · Claude MPM"
+
+    # Truncate model_info if it's too long for left panel
+    if len(model_info) > left_panel_width - 2:  # -2 for padding
+        # Try shorter format first: "Model · Xa, Ys"
+        if agent_count > 0 or skill_count > 0:
+            counts_text = []
+            if agent_count > 0:
+                counts_text.append(f"{agent_count}a")  # "agents" -> "a"
+            if skill_count > 0:
+                counts_text.append(f"{skill_count}s")  # "skills" -> "s"
+            model_info = f"{active_model} · {', '.join(counts_text)}"
+
+        # If still too long, truncate with ellipsis
+        if len(model_info) > left_panel_width - 2:
+            max_length = left_panel_width - 5  # -2 padding, -3 for "..."
+            if max_length > 0:
+                model_info = model_info[:max_length] + "..."
+            else:
+                model_info = active_model
 
     lines.append(
         _format_two_column_line(
@@ -563,7 +661,8 @@ def should_show_banner(args) -> bool:
     """
     Determine if startup banner should be displayed.
 
-    Skip banner for: --help, --version, --headless, info, doctor, config, configure, oauth commands
+    Skip banner for: --help, --version, info, doctor, config, configure, oauth, setup, slack commands
+    Also skip for fast read-only commands like `agents list` and `skills list`
     """
     # Check for help/version flags
     if hasattr(args, "help") and args.help:
@@ -571,14 +670,28 @@ def should_show_banner(args) -> bool:
     if hasattr(args, "version") and args.version:
         return False
 
-    # Check for headless mode - no Rich output in headless mode
-    if getattr(args, "headless", False):
+    # Check for commands that should skip banner
+    # Lightweight commands are fast utilities that should run immediately
+    from claude_mpm.cli.command_config import is_lightweight_command
+
+    if hasattr(args, "command") and is_lightweight_command(args.command):
         return False
 
-    # Check for commands that should skip banner
-    # OAuth commands are lightweight utilities that should run immediately
-    skip_commands = {"info", "doctor", "config", "configure", "oauth"}
-    if hasattr(args, "command") and args.command in skip_commands:
-        return False
+    # Skip banner for fast read-only subcommands
+    # These only read cached data and should display output immediately
+    if hasattr(args, "command"):
+        command = args.command
+
+        # Skip for agents list
+        if command == "agents":
+            agents_cmd = getattr(args, "agents_command", None)
+            if agents_cmd == "list":
+                return False
+
+        # Skip for skills list
+        if command == "skills":
+            skills_cmd = getattr(args, "skills_command", None)
+            if skills_cmd == "list":
+                return False
 
     return True
